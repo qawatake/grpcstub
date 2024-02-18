@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/k1LoW/grpcstub/testdata/routeguide"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -14,9 +13,11 @@ import (
 )
 
 type MockServer struct {
-	gs          *grpc.Server
-	lis         net.Listener
-	methodInfos methodInfo
+	gs  *grpc.Server
+	lis net.Listener
+	// methodInfo  methodInfo
+	// methodInfos []methodInfo
+	matchers []*Matcher
 }
 
 type methodInfo struct {
@@ -26,37 +27,37 @@ type methodInfo struct {
 	response   protoreflect.ProtoMessage
 }
 
-func NewMockServer() *MockServer {
+func NewMockServer() (*MockServer, error) {
 	s := &MockServer{
-		methodInfos: methodInfo{
-			serverName: "routeguide.RouteGuide",
-			methodName: "GetFeature",
-			request:    new(routeguide.Point),
-			response:   new(routeguide.Feature),
-		},
+		// methodInfo: methodInfo{
+		// 	serverName: "routeguide.RouteGuide",
+		// 	methodName: "GetFeature",
+		// 	request:    new(routeguide.Point),
+		// 	response:   new(routeguide.Feature),
+		// },
 	}
 	gs := grpc.NewServer()
-	gs.RegisterService(
-		&grpc.ServiceDesc{
-			ServiceName: s.methodInfos.serverName,
-			Methods: []grpc.MethodDesc{
-				{
-					MethodName: s.methodInfos.methodName,
-					Handler:    s.newUnaryHandler(),
-				},
-			},
-		}, nil)
+	// gs.RegisterService(
+	// 	&grpc.ServiceDesc{
+	// 		ServiceName: s.methodInfo.serverName,
+	// 		Methods: []grpc.MethodDesc{
+	// 			{
+	// 				MethodName: s.methodInfo.methodName,
+	// 				Handler:    s.newUnaryHandler(),
+	// 			},
+	// 		},
+	// 	}, nil)
 	s.gs = gs
-	return s
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	s.lis = lis
+	return s, nil
 }
 
 func (s *MockServer) Start() error {
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return err
-	}
-	s.lis = lis
-	go s.gs.Serve(lis)
+	go s.gs.Serve(s.lis)
 	return nil
 }
 
@@ -64,14 +65,63 @@ func (s *MockServer) Conn() (*grpc.ClientConn, error) {
 	return grpc.Dial(s.lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 }
 
-func (s *MockServer) newUnaryHandler() func(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func (s *MockServer) Method(serverName, methodName string, reqType protoreflect.ProtoMessage, resType protoreflect.ProtoMessage) *Matcher {
+	m := &Matcher{
+		ServerName:   serverName,
+		MethodName:   methodName,
+		RequestType:  reqType,
+		ResponseType: resType,
+	}
+	s.matchers = append(s.matchers, m)
+	s.gs.RegisterService(
+		&grpc.ServiceDesc{
+			ServiceName: m.ServerName,
+			Methods: []grpc.MethodDesc{
+				{
+					MethodName: m.MethodName,
+					Handler:    s.newUnaryHandler(m),
+				},
+			},
+		}, nil)
+	return m
+}
+
+type Matcher struct {
+	ServerName   string
+	MethodName   string
+	RequestType  protoreflect.ProtoMessage
+	ResponseType protoreflect.ProtoMessage
+	response     protoreflect.ProtoMessage
+}
+
+func (m *Matcher) Response(v protoreflect.ProtoMessage) {
+	m.response = v
+}
+
+func (s *MockServer) newUnaryHandler(matcher *Matcher) func(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	return func(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-		in := dynamicpb.NewMessage(s.methodInfos.request.ProtoReflect().Descriptor())
+		// var matcher *Matcher
+		// for _, m := range s.matchers {
+		// 	if m.ServerName == serverName && m.MethodName == methodName {
+		// 		matcher = m
+		// 		break
+		// 	}
+		// }
+		// if matcher == nil {
+		// 	return nil, fmt.Errorf("no matcher found")
+		// }
+
+		// in := dynamicpb.NewMessage(s.methodInfo.request.ProtoReflect().Descriptor())
+		in := dynamicpb.NewMessage(matcher.RequestType.ProtoReflect().Descriptor())
 		if err := dec(in); err != nil {
 			return nil, err
 		}
 		fmt.Println("😀")
-		out := dynamicpb.NewMessage(s.methodInfos.response.ProtoReflect().Descriptor())
+		if matcher.response != nil {
+			return matcher.response, nil
+		}
+		out := dynamicpb.NewMessage(matcher.response.ProtoReflect().Descriptor())
+		// out := dynamicpb.NewMessage(s.methodInfo.response.ProtoReflect().Descriptor())
 		if err := protojson.Unmarshal([]byte(`{"name":"hello"}`), out); err != nil {
 			return nil, err
 		}
